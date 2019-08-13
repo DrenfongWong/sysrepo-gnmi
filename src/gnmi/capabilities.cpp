@@ -1,26 +1,25 @@
 /*  vim:set softtabstop=2 shiftwidth=2 tabstop=2 expandtab: */
 
-#include "server.h"
+#include "gnmi.h"
+#include <utils/log.h>
 
-using namespace grpc;
 using namespace gnmi;
 using namespace std;
 using sysrepo::Yang_Schemas;
 using google::protobuf::FileOptions;
 
-Status GNMIServer::Capabilities(ServerContext *context,
+Status GNMIService::Capabilities(ServerContext *context,
                                  const CapabilityRequest* request,
                                  CapabilityResponse* response)
 {
-  UNUSED(context);
+  (void)context;
   shared_ptr<Yang_Schemas> schemas;
   string gnmi_version;
   FileOptions fopts;
 
   if (request->extension_size() > 0) {
-    cerr << "Extensions not implemented" << endl;
-    return Status(StatusCode::UNIMPLEMENTED,
-                  grpc::string("Extensions not implemented"));
+    BOOST_LOG_TRIVIAL(error) << "Extensions not implemented";
+    return Status(StatusCode::UNIMPLEMENTED, "Extensions not implemented");
   }
 
   try {
@@ -41,11 +40,11 @@ Status GNMIServer::Capabilities(ServerContext *context,
     //response->add_supported_encodings(gnmi::Encoding::BYTES);
     //response->add_supported_encodings(gnmi::Encoding::PROTO);
     //response->add_supported_encodings(gnmi::Encoding::ASCII);
-    //response->add_supported_encodings(gnmi::Encoding::JSON_IETF);
+    response->add_supported_encodings(gnmi::Encoding::JSON_IETF);
 
   } catch (const exception &exc) {
-    cerr << "ERROR" << exc.what() << endl;
-    return Status(StatusCode::INTERNAL, grpc::string("Fail getting schemas"));
+    BOOST_LOG_TRIVIAL(error) << exc.what();
+    return Status(StatusCode::INTERNAL, "Fail getting schemas");
   }
 
   return Status::OK;

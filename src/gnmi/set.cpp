@@ -1,22 +1,27 @@
 /*  vim:set softtabstop=2 shiftwidth=2 tabstop=2 expandtab: */
 
-#include "server.h"
+#include "set.h"
 #include "encode/encode.h"
+#include <utils/utils.h>
+#include <utils/log.h>
 
 using namespace sysrepo;
+using namespace std;
 
-StatusCode GNMIServer::handleUpdate(Update in, UpdateResult *out, string prefix)
+namespace impl {
+
+StatusCode Set::handleUpdate(Update in, UpdateResult *out, string prefix)
 {
   shared_ptr<Val> sval;
   //Parse request
   if (!in.has_path() || !in.has_val()) {
-    cerr << "ERROR: Update no path or value" << endl;
+    BOOST_LOG_TRIVIAL(error) << "Update no path or value";
     return StatusCode::INVALID_ARGUMENT;
   }
 
   string fullpath = prefix + gnmi_to_xpath(in.path());
   TypedValue reqval = in.val();
-  cerr << "DEBUG: Update" << fullpath << endl;
+  BOOST_LOG_TRIVIAL(debug) << "Update" << fullpath;
 
   switch (reqval.value_case()) {
     case gnmi::TypedValue::ValueCase::kStringVal: /* No encoding */
@@ -25,12 +30,10 @@ StatusCode GNMIServer::handleUpdate(Update in, UpdateResult *out, string prefix)
       break;
     case gnmi::TypedValue::ValueCase::kIntVal: /* No Encoding */
       sval = make_shared<Val>(reqval.int_val(), SR_INT64_T);
-      //sval = make_shared<Val>(reqval.int_val());
       sr_sess->set_item(fullpath.c_str(), sval);
       break;
     case gnmi::TypedValue::ValueCase::kUintVal: /* No Encoding */
       sval = make_shared<Val>(reqval.uint_val(), SR_UINT64_T);
-      //sval = make_shared<Val>(reqval.uint_val());
       sr_sess->set_item(fullpath.c_str(), sval);
       break;
     case gnmi::TypedValue::ValueCase::kBoolVal: /* No Encoding */
@@ -48,7 +51,6 @@ StatusCode GNMIServer::handleUpdate(Update in, UpdateResult *out, string prefix)
       throw std::invalid_argument("Unsupported Decimal64 type");
       return StatusCode::UNIMPLEMENTED;
     case gnmi::TypedValue::ValueCase::kLeaflistVal:
-      //TODO Need to support this
       throw std::invalid_argument("Unsupported leaflist type");
       return StatusCode::UNIMPLEMENTED;
     case gnmi::TypedValue::ValueCase::kAnyVal:
@@ -59,7 +61,7 @@ StatusCode GNMIServer::handleUpdate(Update in, UpdateResult *out, string prefix)
       return StatusCode::UNIMPLEMENTED;
     case gnmi::TypedValue::ValueCase::kJsonIetfVal:
       try {
-        encodef->getEncoding(JSON)->set(reqval.json_ietf_val());
+        encodef->json_update(reqval.json_ietf_val());
       } catch (runtime_error &err) {
         //wrong input field must reply an error to gnmi client
         throw std::invalid_argument(err.what());
@@ -89,16 +91,13 @@ StatusCode GNMIServer::handleUpdate(Update in, UpdateResult *out, string prefix)
   return StatusCode::OK;
 }
 
-Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
-                       SetResponse* response)
+Status Set::run(const SetRequest* request, SetResponse* response)
 {
   std::string prefix = "";
-  UNUSED(context);
 
   if (request->extension_size() > 0) {
-    cerr << "Extensions not implemented" << endl;
-    return Status(StatusCode::UNIMPLEMENTED,
-                  grpc::string("Extensions not implemented"));
+    BOOST_LOG_TRIVIAL(error) << "Extensions not implemented";
+    return Status(StatusCode::UNIMPLEMENTED, "Extensions not implemented");
   }
 
   response->set_timestamp(get_time_nanosec());
@@ -106,7 +105,7 @@ Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
   /* Prefix for gNMI path */
   if (request->has_prefix()) {
     prefix = gnmi_to_xpath(request->prefix());
-    cerr << "DEBUG: prefix is" << prefix << endl;
+    BOOST_LOG_TRIVIAL(debug) << "prefix is " << prefix;
     response->mutable_prefix()->CopyFrom(request->prefix());
   }
 
@@ -115,18 +114,16 @@ Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
     for (auto delpath : request->delete_()) {
       //Parse request and config sysrepo
       string fullpath = prefix + gnmi_to_xpath(delpath);
-      cerr << "DEBUG: Delete" << fullpath << endl;
+      BOOST_LOG_TRIVIAL(debug) << "Delete " << fullpath;
       try {
         sr_sess->delete_item(fullpath.c_str()); //EDIT_DEFAULT option
       } catch (const exception &exc) {
-        cerr << "ERROR: " << __FILE__
-             << " l. " << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INTERNAL, grpc::string("delete item failed"));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INTERNAL, "delete item failed");
       }
       //Fill in Reponse
       UpdateResult* res = response->add_response();
-      res->set_allocated_path(&delpath);
+      *(res->mutable_path()) = delpath;
       res->set_op(gnmi::UpdateResult::DELETE);
     }
   }
@@ -138,20 +135,14 @@ Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
       try {
         handleUpdate(upd, res, prefix);
       } catch (const invalid_argument &exc) {
-        cerr << "ERROR: " << __FILE__
-             << " l." << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INVALID_ARGUMENT, grpc::string(exc.what()));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INVALID_ARGUMENT, exc.what());
       } catch (const sysrepo_exception &exc) {
-        cerr << "ERROR: " << __FILE__
-             << " l." << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INTERNAL, grpc::string(exc.what()));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INTERNAL, exc.what());
       } catch (const exception &exc) { //Any other exception
-        cerr << "ERROR: " << __FILE__
-             << " l." << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INTERNAL, grpc::string(exc.what()));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INTERNAL, exc.what());
       }
       res->set_op(gnmi::UpdateResult::REPLACE);
     }
@@ -164,15 +155,11 @@ Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
       try {
         handleUpdate(upd, res, prefix);
       } catch (const invalid_argument &exc) {
-        cerr << "ERROR: " << __FILE__
-             << " l." << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INVALID_ARGUMENT, grpc::string(exc.what()));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INVALID_ARGUMENT, exc.what());
       } catch (const sysrepo_exception &exc) {
-        cerr << "ERROR: " << __FILE__
-             << " l." << __LINE__
-             << " " << exc.what() << endl;
-        return Status(StatusCode::INTERNAL, grpc::string(exc.what()));
+        BOOST_LOG_TRIVIAL(error) << exc.what();
+        return Status(StatusCode::INTERNAL, exc.what());
       }
       res->set_op(gnmi::UpdateResult::UPDATE);
     }
@@ -181,11 +168,11 @@ Status GNMIServer::Set(ServerContext *context, const SetRequest* request,
   try {
     sr_sess->commit();
   } catch (const exception &exc) {
-    cerr << "ERROR: " << __FILE__
-         << " l." << __LINE__
-         << " " << exc.what() << endl;
-    return Status(StatusCode::INTERNAL, grpc::string("commit failed"));
+    BOOST_LOG_TRIVIAL(error) << exc.what();
+    return Status(StatusCode::INTERNAL, "commit failed");
   }
 
   return Status::OK;
+}
+
 }
